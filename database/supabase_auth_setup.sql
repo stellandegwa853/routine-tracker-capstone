@@ -35,31 +35,38 @@ update public.users set role = 'ADMIN' where lower(email) = 'admin@usiu.ac.ke';
 -- ---------------------------------------------------------------------------
 -- 2. Create or link the profile when an auth account is confirmed
 -- ---------------------------------------------------------------------------
-create or replace function public.handle_auth_user()
-returns trigger
+-- Creates or links the public.users row for one auth account. Used by the
+-- sign-up trigger, by the backfill below, and by ensure_my_profile().
+create or replace function public.link_auth_user(p_auth_id uuid)
+returns void
 language plpgsql
 security definer
 set search_path = public
 as $$
 declare
   v_user_id public.users.user_id%type;
-  v_meta jsonb := coalesce(new.raw_user_meta_data, '{}'::jsonb);
+  v_auth auth.users%rowtype;
+  v_meta jsonb;
 begin
+  select * into v_auth from auth.users where id = p_auth_id;
+
   -- Only link once the email address is confirmed, so nobody can claim
   -- an existing student's records by signing up with their email.
-  if new.email_confirmed_at is null then
-    return new;
+  if v_auth.id is null or v_auth.email_confirmed_at is null then
+    return;
   end if;
 
-  if exists (select 1 from public.users where auth_id = new.id) then
-    return new;
+  if exists (select 1 from public.users where auth_id = v_auth.id) then
+    return;
   end if;
+
+  v_meta := coalesce(v_auth.raw_user_meta_data, '{}'::jsonb);
 
   -- Existing student from before Supabase Auth: link it and discard the old hash.
   update public.users
-     set auth_id = new.id,
+     set auth_id = v_auth.id,
          password_hash = null
-   where lower(email) = lower(new.email)
+   where lower(email) = lower(v_auth.email)
      and auth_id is null
   returning user_id into v_user_id;
 
@@ -67,10 +74,10 @@ begin
     -- Brand-new student. The role is always STUDENT; sign-up data can't make someone an admin.
     insert into public.users (auth_id, full_name, student_id, email, role, account_status)
     values (
-      new.id,
-      coalesce(nullif(trim(v_meta ->> 'full_name'), ''), split_part(new.email, '@', 1)),
+      v_auth.id,
+      coalesce(nullif(trim(v_meta ->> 'full_name'), ''), split_part(v_auth.email, '@', 1)),
       nullif(trim(v_meta ->> 'student_id'), ''),
-      lower(new.email),
+      lower(v_auth.email),
       'STUDENT',
       'Active'
     )
@@ -84,10 +91,42 @@ begin
       8.0
     );
   end if;
+end;
+$$;
 
+create or replace function public.handle_auth_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.link_auth_user(new.id);
   return new;
 end;
 $$;
+
+-- Lets a signed-in user repair a missing link for their own account only.
+create or replace function public.ensure_my_profile()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Not signed in.';
+  end if;
+  perform public.link_auth_user(auth.uid());
+end;
+$$;
+
+revoke all on function public.link_auth_user(uuid) from public, anon, authenticated;
+revoke all on function public.ensure_my_profile() from public, anon;
+grant execute on function public.ensure_my_profile() to authenticated;
+
+-- Backfill: link logins that were created before this script was run.
+select public.link_auth_user(id) from auth.users where email_confirmed_at is not null;
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created

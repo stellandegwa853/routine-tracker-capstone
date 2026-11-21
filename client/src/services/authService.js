@@ -41,7 +41,14 @@ export async function signIn(email, password) {
     throw error;
   }
 
-  const profile = await fetchProfile(data.user.id);
+  let profile = await fetchProfile(data.user.id);
+  if (!profile) {
+    // The login exists but isn't linked to a users row yet (e.g. it was created
+    // before the database setup script ran). Ask the database to link it.
+    const { error: linkError } = await supabase.rpc('ensure_my_profile');
+    if (linkError) console.error('Profile link failed:', linkError);
+    profile = await fetchProfile(data.user.id);
+  }
   if (!profile) {
     await supabase.auth.signOut();
     throw new Error('Your account has no student profile. Please contact Administration.');
