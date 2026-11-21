@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { User, Mail, Lock, Hash, BookOpen, AlertCircle, UserPlus, ArrowLeft } from 'lucide-react';
 import { signUp } from '../services/authService';
+import { PROGRAM_GROUPS } from '../constants/programs';
 
 export default function RegisterPage({ onNavigateToLogin, onRegisterSuccess }) {
   const [formData, setFormData] = useState({
@@ -142,9 +143,13 @@ export default function RegisterPage({ onNavigateToLogin, onRegisterSuccess }) {
                   onChange={(e) => setFormData({ ...formData, degreeProgram: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-2 py-2 text-white focus:outline-none focus:border-indigo-500"
                 >
-                  <option value="Software Engineering">Software Engineering</option>
-                  <option value="Applied Computer Technology">Applied Computer Tech</option>
-                  <option value="Information Systems Technology">IST</option>
+                  {PROGRAM_GROUPS.map((group) => (
+                    <optgroup key={group.school} label={group.school}>
+                      {group.programs.map((program) => (
+                        <option key={program} value={program}>{program}</option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
             </div>

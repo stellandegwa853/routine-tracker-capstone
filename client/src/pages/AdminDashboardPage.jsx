@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { computeBri } from '../utils/bri';
+import { ALL_PROGRAMS } from '../constants/programs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -105,6 +106,12 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
     ? Math.round(scoredStudents.reduce((acc, curr) => acc + curr.avgBri, 0) / scoredStudents.length)
     : '-';
   const programCount = new Set(students.map(s => s.major)).size;
+
+  // Every offered program, plus any older value already stored for a student.
+  const filterPrograms = [
+    ...ALL_PROGRAMS,
+    ...[...new Set(students.map(s => s.major))].filter(m => !ALL_PROGRAMS.includes(m)).sort()
+  ];
 
   // Toggle student status (Active / Flagged). Flagged students can't sign in.
   const handleToggleStatus = async (student) => {
@@ -267,9 +274,9 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
               className="bg-slate-950 border border-slate-800 text-xs rounded-xl px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500"
             >
               <option value="All">All Degree Programs</option>
-              <option value="Software Engineering">Software Engineering</option>
-              <option value="Applied Computer Technology">Applied Computer Technology</option>
-              <option value="Information Systems Technology">Information Systems Technology</option>
+              {filterPrograms.map((program) => (
+                <option key={program} value={program}>{program}</option>
+              ))}
             </select>
           </div>
         </div>
