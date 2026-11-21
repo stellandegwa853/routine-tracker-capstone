@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { Mail, Lock, LogIn, AlertCircle, ArrowLeft } from 'lucide-react';
-import { supabase } from '../supabaseClient';
-import bcrypt from 'bcryptjs';
+import { signIn } from '../services/authService';
 
 export default function LoginPage({ onNavigateToRegister, onNavigateToLanding, onLoginSuccess }) {
   const [formData, setFormData] = useState({
@@ -17,69 +16,9 @@ export default function LoginPage({ onNavigateToRegister, onNavigateToLanding, o
     setLoading(true);
 
     try {
-      // 1. Direct route for default system administrator
-      if (formData.email.trim().toLowerCase() === 'admin@usiu.ac.ke') {
-        const { data: adminData } = await supabase
-          .from('users')
-          .select('*')
-          .eq('email', 'admin@usiu.ac.ke')
-          .maybeSingle();
-
-        if (adminData) {
-          const isAdminMatch = adminData.password_hash.startsWith('$2')
-            ? bcrypt.compareSync(formData.password, adminData.password_hash)
-            : adminData.password_hash === formData.password;
-
-          if (isAdminMatch) {
-            onLoginSuccess({
-              name: adminData.full_name,
-              email: adminData.email,
-              role: 'ADMIN'
-            });
-            return;
-          }
-        }
-      }
-
-      // 2. Query student user from Supabase users table
-      const { data: user, error } = await supabase
-        .from('users')
-        .select('*, student_profiles(*)')
-        .eq('email', formData.email.trim().toLowerCase())
-        .maybeSingle();
-
-      if (error) throw error;
-
-      if (!user) {
-        setErrorMessage('No student account found with this email address.');
-        return;
-      }
-
-      if (user.account_status !== 'Active') {
-        setErrorMessage('Account is suspended or flagged. Please contact Administration.');
-        return;
-      }
-
-      // 3. Cryptographic hash comparison with fallback for legacy plain text seeds
-      const isPasswordValid = user.password_hash.startsWith('$2')
-        ? bcrypt.compareSync(formData.password, user.password_hash)
-        : user.password_hash === formData.password;
-
-      if (!isPasswordValid) {
-        setErrorMessage('Incorrect password. Please verify your credentials.');
-        return;
-      }
-
-      // Successful student login
-      onLoginSuccess({
-        userId: user.user_id,
-        fullName: user.full_name,
-        studentId: user.student_id,
-        email: user.email,
-        role: user.role,
-        degreeProgram: user.student_profiles?.[0]?.degree_program || 'Software Engineering'
-      });
-
+      // Supabase Auth checks the password on the server; the role comes from the database.
+      const profile = await signIn(formData.email, formData.password);
+      onLoginSuccess(profile);
     } catch (err) {
       console.error('Login error:', err);
       setErrorMessage(err.message || 'An error occurred during authentication.');

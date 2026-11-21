@@ -1,40 +1,76 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import LandingPage from './pages/LandingPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import AdminDashboardPage from './pages/AdminDashboardPage.jsx';
+import { supabase } from './supabaseClient';
+import { fetchProfile, signOut } from './services/authService';
+
+const pageForProfile = (profile) => (profile.role === 'ADMIN' ? 'admin-dashboard' : 'dashboard');
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState('landing');
-  const [currentStudent, setCurrentStudent] = useState(null);
-  const [adminUser, setAdminUser] = useState(null);
+  const [currentPage, setCurrentPage] = useState('loading');
+  const [currentUser, setCurrentUser] = useState(null);
 
-  // Authenticate user by role
-  const handleLoginSuccess = (userProfile) => {
-    // If the email belongs to an administrator, route to the Admin Console
-    if (userProfile.email.toLowerCase().includes('admin')) {
-      setAdminUser({
-        name: 'Dr. Academic Affairs / Counseling Director',
-        email: userProfile.email,
-        role: 'ADMIN'
-      });
-      setCurrentPage('admin-dashboard');
-    } else {
-      // Standard student user
-      setCurrentStudent(userProfile);
-      setCurrentPage('dashboard');
-    }
+  // Restore an existing Supabase session on page load, and react when it ends.
+  useEffect(() => {
+    let active = true;
+
+    const restoreSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const authUser = data.session?.user;
+        const profile = authUser ? await fetchProfile(authUser.id) : null;
+        if (!active) return;
+
+        if (profile && profile.accountStatus === 'Active') {
+          setCurrentUser(profile);
+          setCurrentPage(pageForProfile(profile));
+        } else {
+          if (authUser) await signOut();
+          setCurrentPage('landing');
+        }
+      } catch (err) {
+        console.error('Failed to restore session:', err);
+        if (active) setCurrentPage('landing');
+      }
+    };
+
+    restoreSession();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT' && active) {
+        setCurrentUser(null);
+        setCurrentPage('login');
+      }
+    });
+
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const handleAuthenticated = (profile) => {
+    setCurrentUser(profile);
+    setCurrentPage(pageForProfile(profile));
   };
 
-  const handleRegisterSuccess = (newUser) => {
-    setCurrentStudent(newUser);
-    setCurrentPage('dashboard');
+  const handleLogout = async () => {
+    await signOut();
+    setCurrentUser(null);
+    setCurrentPage('login');
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* 1. Landing View */}
+      {currentPage === 'loading' && (
+        <div className="min-h-screen flex items-center justify-center text-xs text-slate-500">
+          Loading...
+        </div>
+      )}
+
       {currentPage === 'landing' && (
         <LandingPage
           onLogin={() => setCurrentPage('login')}
@@ -42,43 +78,27 @@ export default function App() {
         />
       )}
 
-      {/* 2. Login View */}
       {currentPage === 'login' && (
         <LoginPage
           onNavigateToRegister={() => setCurrentPage('register')}
           onNavigateToLanding={() => setCurrentPage('landing')}
-          onLoginSuccess={handleLoginSuccess}
+          onLoginSuccess={handleAuthenticated}
         />
       )}
 
-      {/* 3. Register View */}
       {currentPage === 'register' && (
         <RegisterPage
           onNavigateToLogin={() => setCurrentPage('login')}
-          onRegisterSuccess={handleRegisterSuccess}
+          onRegisterSuccess={handleAuthenticated}
         />
       )}
 
-      {/* 4. Student Wellness Dashboard */}
-      {currentPage === 'dashboard' && (
-        <DashboardPage
-          studentUser={currentStudent}
-          onLogout={() => {
-            setCurrentStudent(null);
-            setCurrentPage('login');
-          }}
-        />
+      {currentPage === 'dashboard' && currentUser && (
+        <DashboardPage studentUser={currentUser} onLogout={handleLogout} />
       )}
 
-      {/* 5. System Administrator Console (Meeting 3) */}
-      {currentPage === 'admin-dashboard' && (
-        <AdminDashboardPage
-          adminUser={adminUser}
-          onLogout={() => {
-            setAdminUser(null);
-            setCurrentPage('login');
-          }}
-        />
+      {currentPage === 'admin-dashboard' && currentUser && (
+        <AdminDashboardPage adminUser={currentUser} onLogout={handleLogout} />
       )}
     </div>
   );

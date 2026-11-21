@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { 
   ShieldCheck, 
   Users, 
@@ -14,93 +14,135 @@ import {
   CheckCircle2,
   Calendar
 } from 'lucide-react';
+import { supabase } from '../supabaseClient';
+import { computeBri } from '../utils/bri';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const describeLastActive = (logDate) => {
+  if (!logDate) return 'No check-ins yet';
+  const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(`${logDate}T00:00:00`)) / DAY_MS);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return `${days} days ago`;
+};
 
 export default function AdminDashboardPage({ adminUser, onLogout }) {
-  // Mock data of registered students across USIU-Africa cohorts
-  const [students, setStudents] = useState([
-    {
-      id: 1,
-      fullName: 'Stella Ndegwa',
-      studentId: '669749',
-      email: 'stellahndegwah64@gmail.com',
-      major: 'Software Engineering',
-      status: 'Active',
-      avgBri: 42.0,
-      riskLevel: 'Low Risk',
-      lastActive: 'Today'
-    },
-    {
-      id: 2,
-      fullName: 'Kevin Kiprono',
-      studentId: '668102',
-      email: 'k.kiprono@usiu.ac.ke',
-      major: 'Applied Computer Technology',
-      status: 'Active',
-      avgBri: 76.5,
-      riskLevel: 'High Strain',
-      lastActive: 'Yesterday'
-    },
-    {
-      id: 3,
-      fullName: 'Brenda Wanjiru',
-      studentId: '667520',
-      email: 'b.wanjiru@usiu.ac.ke',
-      major: 'Information Systems Technology',
-      status: 'Flagged',
-      avgBri: 84.0,
-      riskLevel: 'High Strain',
-      lastActive: '3 days ago'
-    },
-    {
-      id: 4,
-      fullName: 'David Ochieng',
-      studentId: '669145',
-      email: 'd.ochieng@usiu.ac.ke',
-      major: 'Software Engineering',
-      status: 'Active',
-      avgBri: 55.0,
-      riskLevel: 'Moderate',
-      lastActive: 'Today'
-    }
-  ]);
+  // Students are loaded from Supabase. Row Level Security only returns them to admins.
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMajor, setFilterMajor] = useState('All');
   const [adminNotification, setAdminNotification] = useState(null);
 
+  const loadStudents = useCallback(async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const sevenDaysAgo = new Date(Date.now() - 7 * DAY_MS).toISOString().slice(0, 10);
+
+      const [usersResult, profilesResult, logsResult] = await Promise.all([
+        supabase
+          .from('users')
+          .select('user_id, full_name, student_id, email, role, account_status')
+          .neq('role', 'ADMIN')
+          .order('full_name'),
+        supabase.from('student_profiles').select('user_id, degree_program'),
+        supabase
+          .from('daily_routine_logs')
+          .select('user_id, log_date, sleep_hours, stress_level, hydration_ml, study_hours')
+          .order('log_date', { ascending: false })
+      ]);
+
+      for (const result of [usersResult, profilesResult, logsResult]) {
+        if (result.error) throw result.error;
+      }
+
+      const programByUser = new Map(profilesResult.data.map((p) => [p.user_id, p.degree_program]));
+      const logsByUser = new Map();
+      for (const log of logsResult.data) {
+        if (!logsByUser.has(log.user_id)) logsByUser.set(log.user_id, []);
+        logsByUser.get(log.user_id).push(log);
+      }
+
+      setStudents(usersResult.data
+        .filter((u) => (u.role || '').toUpperCase() !== 'ADMIN')
+        .map((u) => {
+          const userLogs = logsByUser.get(u.user_id) || [];
+          const recentLogs = userLogs.filter((log) => log.log_date >= sevenDaysAgo);
+          const bri = recentLogs.length ? computeBri(recentLogs) : null;
+          return {
+            id: u.user_id,
+            fullName: u.full_name,
+            studentId: u.student_id || '-',
+            email: u.email,
+            major: programByUser.get(u.user_id) || 'Not set',
+            status: u.account_status,
+            avgBri: bri ? bri.score : null,
+            riskLevel: bri ? bri.label : 'No recent data',
+            lastActive: describeLastActive(userLogs[0]?.log_date)
+          };
+        }));
+    } catch (err) {
+      console.error('Failed to load students:', err);
+      setErrorMsg(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStudents();
+  }, [loadStudents]);
+
   // Compute aggregate statistics for institutional overview
   const totalStudents = students.length;
   const highStrainCount = students.filter(s => s.riskLevel === 'High Strain').length;
-  const campusAvgBri = Math.round(
-    students.reduce((acc, curr) => acc + curr.avgBri, 0) / totalStudents
-  );
+  const scoredStudents = students.filter(s => s.avgBri !== null);
+  const campusAvgBri = scoredStudents.length
+    ? Math.round(scoredStudents.reduce((acc, curr) => acc + curr.avgBri, 0) / scoredStudents.length)
+    : '-';
+  const programCount = new Set(students.map(s => s.major)).size;
 
-  // Toggle student status (Active / Flagged)
-  const handleToggleStatus = (id) => {
-    setStudents(students.map(student => {
-      if (student.id === id) {
-        const updatedStatus = student.status === 'Active' ? 'Flagged' : 'Active';
-        setAdminNotification(`Student ${student.fullName} status updated to ${updatedStatus}.`);
-        return { ...student, status: updatedStatus };
-      }
-      return student;
-    }));
+  // Toggle student status (Active / Flagged). Flagged students can't sign in.
+  const handleToggleStatus = async (student) => {
+    const updatedStatus = student.status === 'Active' ? 'Flagged' : 'Active';
+    setErrorMsg(null);
+    const { data, error } = await supabase
+      .from('users')
+      .update({ account_status: updatedStatus })
+      .eq('user_id', student.id)
+      .select('user_id');
+
+    if (error || !data?.length) {
+      setErrorMsg(error?.message || 'Status was not changed. Check that your account has admin rights.');
+      return;
+    }
+    setStudents(prev => prev.map(s => (s.id === student.id ? { ...s, status: updatedStatus } : s)));
+    setAdminNotification(`Student ${student.fullName} status updated to ${updatedStatus}.`);
   };
 
-  // Delete student user
-  const handleDeleteUser = (id, name) => {
-    if (window.confirm(`Are you sure you want to permanently delete user record for ${name}?`)) {
-      setStudents(students.filter(s => s.id !== id));
-      setAdminNotification(`Student record for ${name} has been removed from database.`);
+  // Delete student: removes their logs, profile, user record and login account.
+  const handleDeleteUser = async (student) => {
+    if (!window.confirm(`Are you sure you want to permanently delete ${student.fullName} and all of their records?`)) return;
+    setErrorMsg(null);
+    const { error } = await supabase.rpc('admin_delete_student', { target_email: student.email });
+    if (error) {
+      setErrorMsg(error.message);
+      return;
     }
+    setStudents(prev => prev.filter(s => s.id !== student.id));
+    setAdminNotification(`Student record for ${student.fullName} has been removed from database.`);
   };
 
   // Filter students based on search query and major
   const filteredStudents = students.filter(student => {
     const matchesSearch = 
-      student.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (student.fullName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       student.studentId.includes(searchQuery) ||
-      student.email.toLowerCase().includes(searchQuery.toLowerCase());
+      (student.email || '').toLowerCase().includes(searchQuery.toLowerCase());
     
     const matchesMajor = filterMajor === 'All' || student.major === filterMajor;
     return matchesSearch && matchesMajor;
@@ -123,7 +165,7 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Administrator: {adminUser?.name || 'Academic Affairs / Counseling Center'}
+              Administrator: {adminUser?.fullName || 'Academic Affairs / Counseling Center'}
             </p>
           </div>
         </div>
@@ -155,6 +197,13 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
           </div>
         )}
 
+        {errorMsg && (
+          <div className="p-3.5 rounded-xl border border-rose-500/20 bg-rose-500/10 text-rose-400 text-xs flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
         {/* 1. Campus-Level Analytics Overview Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
           <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-lg">
@@ -163,7 +212,7 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
               <Users className="w-4 h-4 text-indigo-400" />
             </div>
             <div className="mt-3 text-3xl font-extrabold text-white">{totalStudents}</div>
-            <p className="text-[11px] text-slate-500 mt-1">Across 3 academic disciplines</p>
+            <p className="text-[11px] text-slate-500 mt-1">Across {programCount} degree programs</p>
           </div>
 
           <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-lg">
@@ -172,7 +221,7 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
               <Activity className="w-4 h-4 text-sky-400" />
             </div>
             <div className="mt-3 text-3xl font-extrabold text-white">{campusAvgBri} <span className="text-xs font-normal text-slate-500">/ 100</span></div>
-            <p className="text-[11px] text-emerald-400 mt-1">Moderate university baseline</p>
+            <p className="text-[11px] text-emerald-400 mt-1">Students with check-ins in the last 7 days</p>
           </div>
 
           <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-lg">
@@ -251,7 +300,13 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {filteredStudents.length === 0 ? (
+                {loading ? (
+                  <tr>
+                    <td colSpan="7" className="text-center py-8 text-slate-500 text-xs">
+                      Loading student accounts...
+                    </td>
+                  </tr>
+                ) : filteredStudents.length === 0 ? (
                   <tr>
                     <td colSpan="7" className="text-center py-8 text-slate-500 text-xs">
                       No matching student accounts found.
@@ -268,13 +323,15 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
                       <td className="py-3.5 px-4 text-slate-300">{student.major}</td>
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono font-bold text-slate-200">{student.avgBri}</span>
+                          <span className="font-mono font-bold text-slate-200">{student.avgBri ?? '-'}</span>
                           <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold border ${
                             student.riskLevel === 'High Strain' 
                               ? 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                              : student.riskLevel === 'Moderate'
+                              : student.riskLevel === 'Sustainable Balance'
                               ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                              : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                              : student.riskLevel === 'Low Risk'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                              : 'bg-slate-800 text-slate-400 border-slate-700'
                           }`}>
                             {student.riskLevel}
                           </span>
@@ -293,7 +350,7 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
                       <td className="py-3.5 px-4 text-right space-x-2">
                         {/* Status Toggle Button */}
                         <button
-                          onClick={() => handleToggleStatus(student.id)}
+                          onClick={() => handleToggleStatus(student)}
                           className={`p-1.5 rounded-lg border text-xs transition cursor-pointer ${
                             student.status === 'Active'
                               ? 'border-amber-500/30 text-amber-400 hover:bg-amber-500/10'
@@ -306,7 +363,7 @@ export default function AdminDashboardPage({ adminUser, onLogout }) {
                         
                         {/* Delete User Button */}
                         <button
-                          onClick={() => handleDeleteUser(student.id, student.fullName)}
+                          onClick={() => handleDeleteUser(student)}
                           className="p-1.5 rounded-lg border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
                           title="Delete User Record"
                         >

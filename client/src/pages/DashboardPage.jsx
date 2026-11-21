@@ -16,12 +16,14 @@ import {
   CheckCircle
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
+import TaskList from '../components/dashboard/TaskList.jsx';
+import { computeBri } from '../utils/bri';
 
 export default function DashboardPage({ studentUser, onLogout }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
-  const [resolvedUser, setResolvedUser] = useState(studentUser || null);
+  const resolvedUser = studentUser;
 
   // Form states
   const [editingId, setEditingId] = useState(null);
@@ -33,40 +35,6 @@ export default function DashboardPage({ studentUser, onLogout }) {
     stress: 3,
     note: ''
   });
-
-  // 1. Resolve user profile if identity object has missing fields
-  useEffect(() => {
-    const resolveCurrentUser = async () => {
-      if (studentUser?.userId && studentUser?.fullName) {
-        setResolvedUser(studentUser);
-        return;
-      }
-
-      const emailLookup = studentUser?.email || 'stellahndegwah64@gmail.com';
-      try {
-        const { data, error } = await supabase
-          .from('users')
-          .select('user_id, full_name, student_id, email, role')
-          .eq('email', emailLookup)
-          .maybeSingle();
-
-        if (error) throw error;
-        if (data) {
-          setResolvedUser({
-            userId: data.user_id,
-            fullName: data.full_name,
-            studentId: data.student_id,
-            email: data.email,
-            role: data.role
-          });
-        }
-      } catch (err) {
-        console.error('Failed to resolve student identity:', err);
-      }
-    };
-
-    resolveCurrentUser();
-  }, [studentUser]);
 
   // 2. Fetch records strictly belonging to the logged-in student
   const fetchLogs = useCallback(async () => {
@@ -190,22 +158,8 @@ export default function DashboardPage({ studentUser, onLogout }) {
     });
   };
 
-  // 6. Dynamic BRI & Metric Calculations
-  const avgSleep = logs.length 
-    ? (logs.reduce((acc, curr) => acc + Number(curr.sleep_hours), 0) / logs.length).toFixed(1) 
-    : 7.0;
-  const avgStress = logs.length 
-    ? (logs.reduce((acc, curr) => acc + Number(curr.stress_level), 0) / logs.length).toFixed(1) 
-    : 3.0;
-  const avgHydration = logs.length
-    ? Math.round(logs.reduce((acc, curr) => acc + Number(curr.hydration_ml), 0) / logs.length)
-    : 2000;
-  const avgStudy = logs.length
-    ? (logs.reduce((acc, curr) => acc + Number(curr.study_hours), 0) / logs.length).toFixed(1)
-    : 4.0;
-
-  const briScore = Math.min(100, Math.max(10, Math.round((avgStress * 14) + (8 - avgSleep) * 7)));
-  const statusLabel = briScore > 70 ? 'High Strain' : briScore > 45 ? 'Sustainable Balance' : 'Low Risk';
+  // 6. Burnout Risk Index & metric averages
+  const { score: briScore, label: statusLabel, avgSleep, avgStress, avgHydration, avgStudy } = computeBri(logs);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-6 sm:p-8 flex flex-col justify-between selection:bg-indigo-500 selection:text-white">
@@ -302,7 +256,7 @@ export default function DashboardPage({ studentUser, onLogout }) {
                   </div>
                 )}
 
-                {parseFloat(avgSleep) < 7.0 && (
+                {avgSleep < 7.0 && (
                   <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 flex items-start gap-2.5">
                     <Moon className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
                     <div>
@@ -314,7 +268,7 @@ export default function DashboardPage({ studentUser, onLogout }) {
                   </div>
                 )}
 
-                {(parseFloat(avgStudy) > 6.0 || parseFloat(avgStress) >= 4) && (
+                {(avgStudy > 6.0 || avgStress >= 4) && (
                   <div className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 flex items-start gap-2.5">
                     <Clock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                     <div>
@@ -338,7 +292,7 @@ export default function DashboardPage({ studentUser, onLogout }) {
                   </div>
                 )}
 
-                {briScore <= 45 && parseFloat(avgSleep) >= 7.0 && parseFloat(avgStress) < 4 && avgHydration >= 1800 && (
+                {briScore <= 45 && avgSleep >= 7.0 && avgStress < 4 && avgHydration >= 1800 && (
                   <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
                     <span className="text-[11px]">Your micro-routines are in optimal balance. Maintain your current study and rest cycles!</span>
@@ -476,77 +430,81 @@ export default function DashboardPage({ studentUser, onLogout }) {
 
           </div>
 
-          {/* Right Column: Historical Routine Records Table */}
-          <div className="lg:col-span-7 bg-slate-900/90 border border-slate-800/80 rounded-2xl p-6 shadow-xl">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-sm font-bold text-white">Historical Routine Records</h2>
-              <span className="text-xs text-slate-400 font-mono">
-                {logs.length} entries stored
-              </span>
-            </div>
+          {/* Right Column: Tasks and Historical Routine Records */}
+          <div className="lg:col-span-7 space-y-6">
+            <TaskList userId={resolvedUser?.userId} />
 
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="text-slate-500 uppercase tracking-wider text-[10px] border-b border-slate-800 pb-2">
-                    <th className="py-2.5 font-semibold">Date</th>
-                    <th className="py-2.5 font-semibold">Sleep</th>
-                    <th className="py-2.5 font-semibold">Study</th>
-                    <th className="py-2.5 font-semibold">Hydration</th>
-                    <th className="py-2.5 font-semibold">Stress</th>
-                    <th className="py-2.5 font-semibold">Context</th>
-                    <th className="py-2.5 text-right font-semibold">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {loading ? (
-                    <tr>
-                      <td colSpan="7" className="text-center py-8 text-slate-500">
-                        Connecting to database...
-                      </td>
+            <div className="bg-slate-900/90 border border-slate-800/80 rounded-2xl p-6 shadow-xl">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-sm font-bold text-white">Historical Routine Records</h2>
+                <span className="text-xs text-slate-400 font-mono">
+                  {logs.length} entries stored
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-slate-500 uppercase tracking-wider text-[10px] border-b border-slate-800 pb-2">
+                      <th className="py-2.5 font-semibold">Date</th>
+                      <th className="py-2.5 font-semibold">Sleep</th>
+                      <th className="py-2.5 font-semibold">Study</th>
+                      <th className="py-2.5 font-semibold">Hydration</th>
+                      <th className="py-2.5 font-semibold">Stress</th>
+                      <th className="py-2.5 font-semibold">Context</th>
+                      <th className="py-2.5 text-right font-semibold">Actions</th>
                     </tr>
-                  ) : logs.length === 0 ? (
-                    <tr>
-                      <td colSpan="7" className="text-center py-8 text-slate-500">
-                        No records logged yet. Add your first check-in!
-                      </td>
-                    </tr>
-                  ) : (
-                    logs.map((log) => (
-                      <tr key={log.log_id} className="hover:bg-slate-850/40 transition">
-                        <td className="py-3.5 font-mono text-slate-300">{log.log_date}</td>
-                        <td className="py-3.5 text-slate-200">{log.sleep_hours}h</td>
-                        <td className="py-3.5 text-slate-200">{log.study_hours}h</td>
-                        <td className="py-3.5 text-sky-400 font-mono">{log.hydration_ml}ml</td>
-                        <td className="py-3.5">
-                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${
-                            log.stress_level >= 4 ? 'bg-rose-500/10 text-rose-400' : 'bg-slate-800 text-slate-300'
-                          }`}>
-                            {log.stress_level}/5
-                          </span>
-                        </td>
-                        <td className="py-3.5 text-slate-400">{log.context_tag || '-'}</td>
-                        <td className="py-3.5 text-right space-x-2">
-                          <button 
-                            onClick={() => handleEditClick(log)}
-                            className="text-slate-400 hover:text-indigo-400 transition cursor-pointer"
-                            title="Edit Record"
-                          >
-                            <Edit3 className="w-3.5 h-3.5 inline" />
-                          </button>
-                          <button 
-                            onClick={() => handleDeleteRecord(log.log_id)}
-                            className="text-slate-400 hover:text-rose-400 transition cursor-pointer"
-                            title="Delete Record"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 inline" />
-                          </button>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {loading ? (
+                      <tr>
+                        <td colSpan="7" className="text-center py-8 text-slate-500">
+                          Connecting to database...
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ) : logs.length === 0 ? (
+                      <tr>
+                        <td colSpan="7" className="text-center py-8 text-slate-500">
+                          No records logged yet. Add your first check-in!
+                        </td>
+                      </tr>
+                    ) : (
+                      logs.map((log) => (
+                        <tr key={log.log_id} className="hover:bg-slate-850/40 transition">
+                          <td className="py-3.5 font-mono text-slate-300">{log.log_date}</td>
+                          <td className="py-3.5 text-slate-200">{log.sleep_hours}h</td>
+                          <td className="py-3.5 text-slate-200">{log.study_hours}h</td>
+                          <td className="py-3.5 text-sky-400 font-mono">{log.hydration_ml}ml</td>
+                          <td className="py-3.5">
+                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded ${
+                              log.stress_level >= 4 ? 'bg-rose-500/10 text-rose-400' : 'bg-slate-800 text-slate-300'
+                            }`}>
+                              {log.stress_level}/5
+                            </span>
+                          </td>
+                          <td className="py-3.5 text-slate-400">{log.context_tag || '-'}</td>
+                          <td className="py-3.5 text-right space-x-2">
+                            <button
+                              onClick={() => handleEditClick(log)}
+                              className="text-slate-400 hover:text-indigo-400 transition cursor-pointer"
+                              title="Edit Record"
+                            >
+                              <Edit3 className="w-3.5 h-3.5 inline" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteRecord(log.log_id)}
+                              className="text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                              title="Delete Record"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 inline" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
 

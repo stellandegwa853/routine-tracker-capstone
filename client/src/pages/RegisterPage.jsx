@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { User, Mail, Lock, Hash, BookOpen, AlertCircle, UserPlus, ArrowLeft } from 'lucide-react';
-import { supabase } from '../supabaseClient';
-import bcrypt from 'bcryptjs';
+import { signUp } from '../services/authService';
 
 export default function RegisterPage({ onNavigateToLogin, onRegisterSuccess }) {
   const [formData, setFormData] = useState({
@@ -14,6 +13,7 @@ export default function RegisterPage({ onNavigateToLogin, onRegisterSuccess }) {
   });
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [confirmationSentTo, setConfirmationSentTo] = useState(null);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -32,57 +32,21 @@ export default function RegisterPage({ onNavigateToLogin, onRegisterSuccess }) {
     setLoading(true);
 
     try {
-      // 1. Generate salt and hash the password (cost factor: 10)
-      const salt = bcrypt.genSaltSync(10);
-      const hashedPassword = bcrypt.hashSync(formData.password, salt);
-
-      // 2. Insert into users table with encrypted hash
-      const { data: newUser, error: userError } = await supabase
-        .from('users')
-        .insert([
-          {
-            full_name: formData.fullName.trim(),
-            student_id: formData.studentId.trim(),
-            email: formData.email.trim().toLowerCase(),
-            password_hash: hashedPassword, // Stored securely as $2a$10$...
-            role: 'STUDENT',
-            account_status: 'Active'
-          }
-        ])
-        .select()
-        .single();
-
-      if (userError) {
-        if (userError.code === '23505') {
-          throw new Error('An account with this email or Student ID already exists.');
-        }
-        throw userError;
-      }
-
-      // 3. Insert corresponding 1-to-1 profile in student_profiles
-      const { error: profileError } = await supabase
-        .from('student_profiles')
-        .insert([
-          {
-            user_id: newUser.user_id,
-            degree_program: formData.degreeProgram,
-            academic_year: 4,
-            target_sleep_hours: 8.0
-          }
-        ]);
-
-      if (profileError) throw profileError;
-
-      // Pass user session to App state
-      onRegisterSuccess({
-        userId: newUser.user_id,
-        fullName: newUser.full_name,
-        studentId: newUser.student_id,
-        email: newUser.email,
-        role: newUser.role,
+      // Supabase Auth stores the password; a database trigger creates the
+      // users + student_profiles rows once the email is confirmed.
+      const profile = await signUp({
+        email: formData.email,
+        password: formData.password,
+        fullName: formData.fullName,
+        studentId: formData.studentId,
         degreeProgram: formData.degreeProgram
       });
 
+      if (profile) {
+        onRegisterSuccess(profile);
+      } else {
+        setConfirmationSentTo(formData.email.trim().toLowerCase());
+      }
     } catch (err) {
       console.error('Registration error:', err);
       setErrorMessage(err.message || 'Failed to complete registration.');
@@ -90,6 +54,27 @@ export default function RegisterPage({ onNavigateToLogin, onRegisterSuccess }) {
       setLoading(false);
     }
   };
+
+  if (confirmationSentTo) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center p-4">
+        <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 rounded-2xl p-8 shadow-2xl space-y-4 text-center">
+          <Mail className="w-8 h-8 text-indigo-400 mx-auto" />
+          <h1 className="text-xl font-bold text-white tracking-tight">Confirm your email</h1>
+          <p className="text-xs text-slate-400">
+            We sent a confirmation link to <span className="text-slate-200">{confirmationSentTo}</span>.
+            Open it, then sign in.
+          </p>
+          <button
+            onClick={onNavigateToLogin}
+            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl transition cursor-pointer"
+          >
+            Go to Sign In
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-center items-center p-4 selection:bg-indigo-500 selection:text-white">
